@@ -5,8 +5,8 @@ Usage on Colab:
     !python train26.py --data /content/dataset --nc 1 --epochs 100 --batch 16 --scale n
 Dataset structure expected:
     dataset/
-      train/images/   train/labels/
-      val/images/     val/labels/
+      images/train/   images/val/
+      labels/train/   labels/val/
 Labels: YOLO format  (cls cx cy w h) normalized per line.
 """
 import argparse, csv, gc, math, os, random, time
@@ -319,6 +319,66 @@ def validate(model, dataloader, device, nc, conf_thresh=0.25, iou_thresh=0.45):
     return mAP50
 
 
+# ========================= Plot Results ====================================
+def plot_results(csv_path, save_dir):
+    """Plot training metrics from results.csv and save as results.png."""
+    try:
+        import matplotlib
+        matplotlib.use('Agg')  # non-interactive backend for Colab/server
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed, skipping plot. Install with: pip install matplotlib")
+        return
+
+    data = {}
+    with open(csv_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            for k, v in row.items():
+                data.setdefault(k, []).append(float(v))
+
+    if not data or 'epoch' not in data:
+        print("No data to plot.")
+        return
+
+    epochs = data['epoch']
+    metrics = [
+        ('box_loss', 'Box Loss', 'tab:red'),
+        ('cls_loss', 'Cls Loss', 'tab:blue'),
+        ('dfl_loss', 'DFL Loss', 'tab:orange'),
+        ('mAP50', 'mAP@0.5', 'tab:green'),
+        ('lr', 'Learning Rate', 'tab:purple'),
+    ]
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig.suptitle('YOLO26 Training Results', fontsize=16, fontweight='bold')
+    axes = axes.flatten()
+
+    for i, (key, title, color) in enumerate(metrics):
+        if key in data:
+            axes[i].plot(epochs, data[key], color=color, linewidth=2)
+            axes[i].set_title(title, fontsize=13)
+            axes[i].set_xlabel('Epoch')
+            axes[i].grid(True, alpha=0.3)
+            if 'loss' in key:
+                axes[i].set_ylabel('Loss')
+
+    # Combined loss plot
+    if all(k in data for k in ('box_loss', 'cls_loss', 'dfl_loss')):
+        total = [b + c + d for b, c, d in zip(data['box_loss'], data['cls_loss'], data['dfl_loss'])]
+        axes[5].plot(epochs, total, color='black', linewidth=2)
+        axes[5].set_title('Total Loss', fontsize=13)
+        axes[5].set_xlabel('Epoch')
+        axes[5].set_ylabel('Loss')
+        axes[5].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plot_path = Path(save_dir) / 'results.png'
+    fig.savefig(plot_path, dpi=200)
+    plt.close(fig)
+    print(f"Results plot saved to {plot_path}")
+
+
 # ============================ Training =====================================
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -348,11 +408,11 @@ def train(args):
     # Datasets
     data_root = Path(args.data)
     train_ds = YOLODataset(
-        data_root / "train" / "images", data_root / "train" / "labels",
+        data_root / "images" / "train", data_root / "labels" / "train",
         imgsz=args.imgsz, augment=True,
     )
     val_ds = YOLODataset(
-        data_root / "val" / "images", data_root / "val" / "labels",
+        data_root / "images" / "val", data_root / "labels" / "val",
         imgsz=args.imgsz, augment=False,
     )
     train_loader = DataLoader(
@@ -530,6 +590,9 @@ def train(args):
     print(f"\nTraining complete. {epoch+1} epochs in {elapsed/3600:.2f} hours.")
     print(f"Best mAP50 = {best_fitness:.4f}")
     print(f"Results saved to {save_dir}")
+
+    # Plot metrics
+    plot_results(csv_path, save_dir)
 
 
 # ============================= Main ========================================
