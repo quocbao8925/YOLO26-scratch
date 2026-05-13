@@ -1,6 +1,6 @@
 # YOLO26-scratch
 --- 
-## Upload all 3 files to Colab, then:
+Upload all 3 files to Colab, then:
 ```python
 !python train26.py \
     --data /content/dataset \
@@ -10,7 +10,7 @@
     --batch 16 \
     --imgsz 640
 ```
-## Dataset structure required:
+Dataset structure required:
 ```python
 dataset/
   train/images/   train/labels/
