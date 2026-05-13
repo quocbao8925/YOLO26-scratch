@@ -1,1 +1,1 @@
-"# YOLO26-scratch" 
+# YOLO26-scratch
