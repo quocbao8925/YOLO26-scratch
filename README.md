@@ -13,6 +13,6 @@ Upload all 3 files to Colab, then:
 Dataset structure required:
 ```python
 dataset/
-  train/images/   train/labels/
-  val/images/     val/labels/
+    images/train   labels/train
+    images/val     labels/val
 ```
