@@ -390,16 +390,50 @@ def train(args):
     # CSV logger
     csv_path = save_dir / "results.csv"
     csv_header = ["epoch", "box_loss", "cls_loss", "dfl_loss", "lr", "mAP50"]
-    with open(csv_path, "w", newline="") as f:
-        csv.writer(f).writerow(csv_header)
+
+    # ---- Resume from checkpoint ----
+    start_epoch = 0
+    best_fitness = 0.0
+    if args.resume:
+        ckpt_path = Path(args.resume)
+        if not ckpt_path.exists():
+            # Try default last.pt in save_dir
+            ckpt_path = wdir / "last.pt"
+        assert ckpt_path.exists(), f"Resume checkpoint not found: {ckpt_path}"
+        print(f"Resuming from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        # Restore model weights (training model, not just EMA)
+        model.load_state_dict(ckpt["train_model_state_dict"] if "train_model_state_dict" in ckpt else ckpt["model_state_dict"])
+        ema.ema.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        if "scaler_state_dict" in ckpt and device.type == "cuda":
+            scaler.load_state_dict(ckpt["scaler_state_dict"])
+        start_epoch = ckpt["epoch"] + 1
+        best_fitness = ckpt.get("best_fitness", ckpt.get("fitness", 0.0))
+        # Restore E2ELoss decay state
+        if "e2e_updates" in ckpt:
+            criterion.updates = ckpt["e2e_updates"]
+            criterion.o2m = criterion.decay(criterion.updates)
+            criterion.o2o = max(criterion.total - criterion.o2m, 0)
+        if "ema_updates" in ckpt:
+            ema.updates = ckpt["ema_updates"]
+        print(f"Resumed at epoch {start_epoch}, best_fitness={best_fitness:.4f}")
+        del ckpt
+        gc.collect()
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    else:
+        with open(csv_path, "w", newline="") as f:
+            csv.writer(f).writerow(csv_header)
 
     # ---- Training loop — SOURCE: engine/trainer.py L376-584 ----
-    best_fitness = 0.0
     nw = max(round(hyp.warmup_epochs * nb), 100)
     t0 = time.time()
-    print(f"\nStarting training for {args.epochs} epochs...\n")
+    print(f"\nStarting training from epoch {start_epoch+1} to {args.epochs}...\n")
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         scheduler.step()
         tloss = None
@@ -466,8 +500,14 @@ def train(args):
         ckpt = {
             "epoch": epoch,
             "model_state_dict": ema.ema.state_dict(),
+            "train_model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict(),
             "fitness": fitness,
+            "best_fitness": best_fitness if fitness < best_fitness else fitness,
+            "e2e_updates": criterion.updates,
+            "ema_updates": ema.updates,
             "args": vars(hyp),
         }
         torch.save(ckpt, wdir / "last.pt")
@@ -506,5 +546,10 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=50, help="Early stopping patience")
     parser.add_argument("--workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--save_dir", type=str, default="runs/yolo26", help="Save directory")
+    parser.add_argument("--resume", type=str, default="", help="Path to last.pt checkpoint to resume from (or 'auto' for default)")
     args = parser.parse_args()
+    # Shortcut: --resume auto → use default last.pt path
+    if args.resume == "auto":
+        default_ckpt = Path(args.save_dir) / "weights" / "last.pt"
+        args.resume = str(default_ckpt) if default_ckpt.exists() else ""
     train(args)
