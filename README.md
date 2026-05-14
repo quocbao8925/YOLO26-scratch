@@ -8,7 +8,7 @@ Upload all 3 files to Colab, then:
     --scale n \
     --epochs 100 \
     --batch 16 \
-    --imgsz 640
+    --imgsz 320
 ```
 Dataset structure required:
 ```python
