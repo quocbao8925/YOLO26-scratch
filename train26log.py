@@ -14,8 +14,6 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
-from tqdm import tqdm
-
 import cv2
 import numpy as np
 import torch
@@ -66,7 +64,6 @@ class YOLODataset(Dataset):
         im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
         h0, w0 = im.shape[:2]
 
-        # Augmentations (training only)
         label_path = self.label_dir / f"{img_path.stem}.txt"
         labels = np.zeros((0, 5), dtype=np.float32)
         if label_path.exists():
@@ -220,16 +217,18 @@ def validate(model, dataloader, device, nc, criterion=None, conf_thresh=0.25, io
     stats = {"tp": [], "conf": [], "pred_cls": [], "target_cls": []}
     iouv = torch.linspace(0.5, 0.95, 10, device=device)
     vloss = None
+    nb = len(dataloader)
 
-    pbar = tqdm(dataloader, desc="Validating", leave=False)
-    for i, batch in enumerate(pbar):
+    for i, batch in enumerate(dataloader):
         imgs = batch["img"].to(device)
         y, preds = model(imgs)  # inference returns (y, preds)
 
         if criterion:
             _, loss_items = criterion(preds, batch)
             vloss = loss_items if vloss is None else (vloss * i + loss_items) / (i + 1)
-            pbar.set_postfix({"vbox": f"{vloss[0]:.4f}", "vcls": f"{vloss[1]:.4f}", "vdfl": f"{vloss[2]:.4f}"})
+            if i % 20 == 0 or i == nb - 1:
+                print(f"  [Val {i+1}/{nb}]  vbox={vloss[0]:.4f}  vcls={vloss[1]:.4f}  vdfl={vloss[2]:.4f}")
+
         # y from end2end postprocess: [bs, max_det, 6] (x1,y1,x2,y2,score,cls)
         for si in range(imgs.shape[0]):
             pred = y[si]
@@ -271,7 +270,7 @@ def validate(model, dataloader, device, nc, criterion=None, conf_thresh=0.25, io
             correct = torch.zeros(len(pred), len(iouv), dtype=torch.bool, device=device)
             iou = box_iou_matrix(tbox_pixel, predn_box)
             correct_class = tcls[:, None] == predn_cls[None, :]
-            for i, thr in enumerate(iouv):
+            for j, thr in enumerate(iouv):
                 matches = (iou >= thr) & correct_class
                 if matches.any():
                     x = torch.nonzero(matches, as_tuple=False)
@@ -280,7 +279,6 @@ def validate(model, dataloader, device, nc, criterion=None, conf_thresh=0.25, io
                         m = m[m[:, 2].argsort(descending=True)]
                         # unique gt
                         _, idx_u = torch.unique(m[:, 0], return_inverse=True)
-                        _, first = torch.unique(idx_u, return_inverse=True)
                         mask = torch.zeros(len(m), dtype=torch.bool, device=device)
                         for fi in range(int(idx_u.max()) + 1):
                             mask[(idx_u == fi).nonzero(as_tuple=True)[0][0]] = True
@@ -291,7 +289,7 @@ def validate(model, dataloader, device, nc, criterion=None, conf_thresh=0.25, io
                         for fi in range(int(idx_u2.max()) + 1):
                             mask2[(idx_u2 == fi).nonzero(as_tuple=True)[0][0]] = True
                         m = m[mask2]
-                        correct[m[:, 1].long(), i] = True
+                        correct[m[:, 1].long(), j] = True
             stats["tp"].append(correct)
 
     if not stats["tp"]:
@@ -317,13 +315,12 @@ def validate(model, dataloader, device, nc, criterion=None, conf_thresh=0.25, io
         tpc = tp[pred_cls == c, 0].cumsum(0)
         recall = tpc / (n_gt + 1e-16)
         precision = tpc / (tpc + fpc + 1e-16)
-        # AP via 101-point interpolation
+        # AP via 101-point interpolation (manual trapezoid to avoid numpy deprecation)
         mrec = np.concatenate(([0.0], recall, [1.0]))
         mpre = np.concatenate(([1.0], precision, [0.0]))
         mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
         x = np.linspace(0, 1, 101)
         y_interp = np.interp(x, mrec, mpre)
-        # Manual trapezoid rule to avoid numpy deprecation warning
         ap50.append(np.sum((x[1:] - x[:-1]) * (y_interp[1:] + y_interp[:-1]) / 2.0))
 
     mAP50 = np.mean(ap50) if ap50 else 0.0
@@ -458,7 +455,7 @@ def train(args):
         if ".dfl" in k:
             v.requires_grad = False
 
-    # CSV logger
+    # CSV logger — includes val loss columns
     csv_path = save_dir / "results.csv"
     csv_header = ["epoch", "box_loss", "cls_loss", "dfl_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss", "lr", "mAP50"]
 
@@ -509,9 +506,8 @@ def train(args):
         scheduler.step()
         tloss = None
         optimizer.zero_grad()
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=True)
 
-        for i, batch in enumerate(pbar):
+        for i, batch in enumerate(train_loader):
             ni = i + nb * epoch
 
             # Warmup — SOURCE: engine/trainer.py L425-439
@@ -547,18 +543,22 @@ def train(args):
 
             # Logging
             tloss = loss_items if tloss is None else (tloss * i + loss_items) / (i + 1)
-            mem = f"{torch.cuda.memory_reserved(device) / 1e9:.1f}G" if device.type == "cuda" else "CPU"
-            pbar.set_postfix({"Mem": mem, "box": f"{tloss[0]:.4f}", "cls": f"{tloss[1]:.4f}", "dfl": f"{tloss[2]:.4f}"})
+            if i % 20 == 0 or i == nb - 1:
+                mem = f"{torch.cuda.memory_reserved(device) / 1e9:.1f}G" if device.type == "cuda" else "CPU"
+                print(f"  Epoch {epoch+1}/{args.epochs}  Batch {i+1}/{nb}  "
+                      f"Mem {mem}  box={tloss[0]:.4f}  cls={tloss[1]:.4f}  dfl={tloss[2]:.4f}")
 
         # Update E2ELoss decay — SOURCE: utils/loss.py L1186-1190
         criterion.update()
 
-        # Validation
+        # Validation (full: computes val loss via criterion)
         mAP50, vloss = validate(ema.ema, val_loader, device, args.nc, criterion=criterion)
         vloss = vloss if vloss is not None else torch.zeros(3, device=device)
         fitness = mAP50
         current_lr = optimizer.param_groups[0]["lr"]
-        print(f"  Epoch {epoch+1} complete — mAP50={mAP50:.4f}  val_box={vloss[0]:.4f}  val_cls={vloss[1]:.4f}  val_dfl={vloss[2]:.4f}  lr={current_lr:.6f}")
+        print(f"  Epoch {epoch+1} complete — mAP50={mAP50:.4f}  "
+              f"val_box={vloss[0]:.4f}  val_cls={vloss[1]:.4f}  val_dfl={vloss[2]:.4f}  "
+              f"lr={current_lr:.6f}")
 
         # Save CSV
         with open(csv_path, "a", newline="") as f:
