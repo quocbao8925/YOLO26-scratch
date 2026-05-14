@@ -496,6 +496,7 @@ def train(args):
         if device.type == "cuda":
             torch.cuda.empty_cache()
     else:
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", newline="") as f:
             csv.writer(f).writerow(csv_header)
 
@@ -506,7 +507,6 @@ def train(args):
 
     for epoch in range(start_epoch, args.epochs):
         model.train()
-        scheduler.step()
         tloss = None
         optimizer.zero_grad()
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=True)
@@ -550,6 +550,9 @@ def train(args):
             mem = f"{torch.cuda.memory_reserved(device) / 1e9:.1f}G" if device.type == "cuda" else "CPU"
             pbar.set_postfix({"Mem": mem, "box": f"{tloss[0]:.4f}", "cls": f"{tloss[1]:.4f}", "dfl": f"{tloss[2]:.4f}"})
 
+        # Step LR scheduler once per epoch (after optimizer has stepped)
+        scheduler.step()
+
         # Update E2ELoss decay — SOURCE: utils/loss.py L1186-1190
         criterion.update()
 
@@ -561,6 +564,7 @@ def train(args):
         print(f"  Epoch {epoch+1} complete — mAP50={mAP50:.4f}  val_box={vloss[0]:.4f}  val_cls={vloss[1]:.4f}  val_dfl={vloss[2]:.4f}  lr={current_lr:.6f}")
 
         # Save CSV
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow([
                 epoch + 1, f"{tloss[0]:.5f}", f"{tloss[1]:.5f}", f"{tloss[2]:.5f}",
@@ -581,6 +585,7 @@ def train(args):
             "e2e_updates": criterion.updates,
             "ema_updates": ema.updates,
             "args": vars(hyp),
+            "model_cfg": {"nc": args.nc, "scale": args.scale, "reg_max": args.reg_max},
         }
         torch.save(ckpt, wdir / "last.pt")
         if fitness >= best_fitness:
