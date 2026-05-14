@@ -393,7 +393,11 @@ class E2ELoss:
         one2many, one2one = preds["one2many"], preds["one2one"]
         loss_one2many = self.one2many.loss(one2many, batch)
         loss_one2one = self.one2one.loss(one2one, batch)
-        return loss_one2many[0] * self.o2m + loss_one2one[0] * self.o2o, loss_one2one[1]
+        batch_size = one2one["boxes"].shape[0]
+        o2m_total = loss_one2many[0].detach() / batch_size
+        o2o_total = loss_one2one[0].detach() / batch_size
+        loss_items = torch.cat([loss_one2one[1], torch.stack([o2m_total, o2o_total])])
+        return loss_one2many[0] * self.o2m + loss_one2one[0] * self.o2o, loss_items
 
     def update(self):
         self.updates += 1

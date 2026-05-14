@@ -295,39 +295,47 @@ def validate(model, dataloader, device, nc, criterion=None, conf_thresh=0.25, io
             stats["tp"].append(correct)
 
     if not stats["tp"]:
-        return 0.0, vloss
+        return 0.0, 0.0, vloss
 
     tp = torch.cat(stats["tp"]).cpu().numpy()
     conf = torch.cat(stats["conf"]).cpu().numpy()
     pred_cls = torch.cat(stats["pred_cls"]).cpu().numpy()
     target_cls = torch.cat(stats["target_cls"]).cpu().numpy()
 
-    # Compute AP per class at IoU=0.5
+    # Compute AP per class
     i = np.argsort(-conf)
     tp, conf, pred_cls = tp[i], conf[i], pred_cls[i]
     unique_classes = np.unique(target_cls)
     ap50 = []
+    ap = []
     for c in unique_classes:
         n_gt = (target_cls == c).sum()
         n_pred = (pred_cls == c).sum()
         if n_pred == 0 or n_gt == 0:
             ap50.append(0.0)
+            ap.append(0.0)
             continue
-        fpc = (1 - tp[pred_cls == c, 0]).cumsum(0)
-        tpc = tp[pred_cls == c, 0].cumsum(0)
-        recall = tpc / (n_gt + 1e-16)
-        precision = tpc / (tpc + fpc + 1e-16)
-        # AP via 101-point interpolation
-        mrec = np.concatenate(([0.0], recall, [1.0]))
-        mpre = np.concatenate(([1.0], precision, [0.0]))
-        mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
-        x = np.linspace(0, 1, 101)
-        y_interp = np.interp(x, mrec, mpre)
-        # Manual trapezoid rule to avoid numpy deprecation warning
-        ap50.append(np.sum((x[1:] - x[:-1]) * (y_interp[1:] + y_interp[:-1]) / 2.0))
+        
+        c_ap = []
+        for j in range(tp.shape[1]):
+            fpc = (1 - tp[pred_cls == c, j]).cumsum(0)
+            tpc = tp[pred_cls == c, j].cumsum(0)
+            recall = tpc / (n_gt + 1e-16)
+            precision = tpc / (tpc + fpc + 1e-16)
+            # AP via 101-point interpolation
+            mrec = np.concatenate(([0.0], recall, [1.0]))
+            mpre = np.concatenate(([1.0], precision, [0.0]))
+            mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
+            x = np.linspace(0, 1, 101)
+            y_interp = np.interp(x, mrec, mpre)
+            c_ap.append(np.sum((x[1:] - x[:-1]) * (y_interp[1:] + y_interp[:-1]) / 2.0))
+        
+        ap50.append(c_ap[0])
+        ap.append(np.mean(c_ap))
 
     mAP50 = np.mean(ap50) if ap50 else 0.0
-    return mAP50, vloss
+    mAP = np.mean(ap) if ap else 0.0
+    return mAP50, mAP, vloss
 
 
 # ========================= Plot Results ====================================
@@ -353,35 +361,57 @@ def plot_results(csv_path, save_dir):
         return
 
     epochs = data['epoch']
-    metrics = [
-        ('box_loss', 'Box Loss', 'tab:red'),
-        ('cls_loss', 'Cls Loss', 'tab:blue'),
-        ('dfl_loss', 'DFL Loss', 'tab:orange'),
-        ('mAP50', 'mAP@0.5', 'tab:green'),
-        ('lr', 'Learning Rate', 'tab:purple'),
-    ]
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 10))
     fig.suptitle('YOLO26 Training Results', fontsize=16, fontweight='bold')
     axes = axes.flatten()
 
-    for i, (key, title, color) in enumerate(metrics):
-        if key in data:
-            axes[i].plot(epochs, data[key], color=color, linewidth=2)
-            axes[i].set_title(title, fontsize=13)
-            axes[i].set_xlabel('Epoch')
-            axes[i].grid(True, alpha=0.3)
-            if 'loss' in key:
-                axes[i].set_ylabel('Loss')
+    # Box Loss
+    if 'box_loss' in data and 'val_box_loss' in data:
+        axes[0].plot(epochs, data['box_loss'], label='Train Box Loss', color='tab:red', linewidth=2)
+        axes[0].plot(epochs, data['val_box_loss'], label='Val Box Loss', color='tab:red', linewidth=2, linestyle='--')
+        axes[0].set_title('Box Loss', fontsize=13)
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
 
-    # Combined loss plot
-    if all(k in data for k in ('box_loss', 'cls_loss', 'dfl_loss')):
-        total = [b + c + d for b, c, d in zip(data['box_loss'], data['cls_loss'], data['dfl_loss'])]
-        axes[5].plot(epochs, total, color='black', linewidth=2)
-        axes[5].set_title('Total Loss', fontsize=13)
-        axes[5].set_xlabel('Epoch')
-        axes[5].set_ylabel('Loss')
+    # Cls Loss
+    if 'cls_loss' in data and 'val_cls_loss' in data:
+        axes[1].plot(epochs, data['cls_loss'], label='Train Cls Loss', color='tab:blue', linewidth=2)
+        axes[1].plot(epochs, data['val_cls_loss'], label='Val Cls Loss', color='tab:blue', linewidth=2, linestyle='--')
+        axes[1].set_title('Cls Loss', fontsize=13)
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+
+    # DFL Loss
+    if 'dfl_loss' in data and 'val_dfl_loss' in data:
+        axes[2].plot(epochs, data['dfl_loss'], label='Train DFL Loss', color='tab:orange', linewidth=2)
+        axes[2].plot(epochs, data['val_dfl_loss'], label='Val DFL Loss', color='tab:orange', linewidth=2, linestyle='--')
+        axes[2].set_title('DFL Loss', fontsize=13)
+        axes[2].legend()
+        axes[2].grid(True, alpha=0.3)
+
+    # mAP50
+    if 'mAP50' in data:
+        axes[3].plot(epochs, data['mAP50'], color='tab:green', linewidth=2)
+        axes[3].set_title('mAP@0.5', fontsize=13)
+        axes[3].grid(True, alpha=0.3)
+
+    # O2M and O2O Loss
+    if 'o2m_loss' in data and 'o2o_loss' in data:
+        axes[4].plot(epochs, data['o2m_loss'], label='O2M Loss', color='tab:cyan', linewidth=2)
+        axes[4].plot(epochs, data['o2o_loss'], label='O2O Loss', color='tab:pink', linewidth=2)
+        axes[4].set_title('O2M & O2O Loss', fontsize=13)
+        axes[4].legend()
+        axes[4].grid(True, alpha=0.3)
+
+    # Learning Rate
+    if 'lr' in data:
+        axes[5].plot(epochs, data['lr'], color='tab:purple', linewidth=2)
+        axes[5].set_title('Learning Rate', fontsize=13)
         axes[5].grid(True, alpha=0.3)
+        
+    for ax in axes:
+        ax.set_xlabel('Epoch')
 
     plt.tight_layout()
     plot_path = Path(save_dir) / 'results.png'
@@ -460,7 +490,7 @@ def train(args):
 
     # CSV logger
     csv_path = save_dir / "results.csv"
-    csv_header = ["epoch", "box_loss", "cls_loss", "dfl_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss", "lr", "mAP50"]
+    csv_header = ["epoch", "box_loss", "cls_loss", "dfl_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss", "lr", "mAP50", "mAP", "o2m_loss", "o2o_loss"]
 
     # ---- Resume from checkpoint ----
     start_epoch = 0
@@ -548,7 +578,7 @@ def train(args):
             # Logging
             tloss = loss_items if tloss is None else (tloss * i + loss_items) / (i + 1)
             mem = f"{torch.cuda.memory_reserved(device) / 1e9:.1f}G" if device.type == "cuda" else "CPU"
-            pbar.set_postfix({"Mem": mem, "box": f"{tloss[0]:.4f}", "cls": f"{tloss[1]:.4f}", "dfl": f"{tloss[2]:.4f}"})
+            pbar.set_postfix({"Mem": mem, "box": f"{tloss[0]:.4f}", "cls": f"{tloss[1]:.4f}", "dfl": f"{tloss[2]:.4f}", "o2m": f"{tloss[3]:.4f}", "o2o": f"{tloss[4]:.4f}"})
 
         # Step LR scheduler once per epoch (after optimizer has stepped)
         scheduler.step()
@@ -557,11 +587,11 @@ def train(args):
         criterion.update()
 
         # Validation
-        mAP50, vloss = validate(ema.ema, val_loader, device, args.nc, criterion=criterion)
+        mAP50, mAP, vloss = validate(ema.ema, val_loader, device, args.nc, criterion=criterion)
         vloss = vloss if vloss is not None else torch.zeros(3, device=device)
-        fitness = mAP50
+        fitness = 0.1 * mAP50 + 0.9 * mAP
         current_lr = optimizer.param_groups[0]["lr"]
-        print(f"  Epoch {epoch+1} complete — mAP50={mAP50:.4f}  val_box={vloss[0]:.4f}  val_cls={vloss[1]:.4f}  val_dfl={vloss[2]:.4f}  lr={current_lr:.6f}")
+        print(f"  Epoch {epoch+1} complete — mAP50={mAP50:.4f}  mAP={mAP:.4f}  val_box={vloss[0]:.4f}  val_cls={vloss[1]:.4f}  val_dfl={vloss[2]:.4f}  lr={current_lr:.6f}")
 
         # Save CSV
         csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -569,7 +599,8 @@ def train(args):
             csv.writer(f).writerow([
                 epoch + 1, f"{tloss[0]:.5f}", f"{tloss[1]:.5f}", f"{tloss[2]:.5f}",
                 f"{vloss[0]:.5f}", f"{vloss[1]:.5f}", f"{vloss[2]:.5f}",
-                f"{current_lr:.6f}", f"{mAP50:.5f}",
+                f"{current_lr:.6f}", f"{mAP50:.5f}", f"{mAP:.5f}",
+                f"{tloss[3]:.5f}", f"{tloss[4]:.5f}"
             ])
 
         # Save checkpoints — SOURCE: engine/trainer.py L642-687
