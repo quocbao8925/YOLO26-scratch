@@ -354,7 +354,13 @@ def plot_results(csv_path, save_dir):
         reader = csv.DictReader(f)
         for row in reader:
             for k, v in row.items():
-                data.setdefault(k, []).append(float(v))
+                if k is None:
+                    continue
+                try:
+                    val = float(v) if v is not None and v.strip() != '' else float('nan')
+                except ValueError:
+                    val = float('nan')
+                data.setdefault(k, []).append(val)
 
     if not data or 'epoch' not in data:
         print("No data to plot.")
@@ -396,11 +402,13 @@ def plot_results(csv_path, save_dir):
         axes[3].set_title('mAP@0.5', fontsize=13)
         axes[3].grid(True, alpha=0.3)
 
-    # O2M and O2O Loss
-    if 'o2m_loss' in data and 'o2o_loss' in data:
-        axes[4].plot(epochs, data['o2m_loss'], label='O2M Loss', color='tab:cyan', linewidth=2)
-        axes[4].plot(epochs, data['o2o_loss'], label='O2O Loss', color='tab:pink', linewidth=2)
-        axes[4].set_title('O2M & O2O Loss', fontsize=13)
+    # Total Loss
+    if all(k in data for k in ['box_loss', 'cls_loss', 'dfl_loss', 'val_box_loss', 'val_cls_loss', 'val_dfl_loss']):
+        train_total = [b + c + d for b, c, d in zip(data['box_loss'], data['cls_loss'], data['dfl_loss'])]
+        val_total = [b + c + d for b, c, d in zip(data['val_box_loss'], data['val_cls_loss'], data['val_dfl_loss'])]
+        axes[4].plot(epochs, train_total, label='Train Total Loss', color='tab:brown', linewidth=2)
+        axes[4].plot(epochs, val_total, label='Val Total Loss', color='tab:brown', linewidth=2, linestyle='--')
+        axes[4].set_title('Total Loss', fontsize=13)
         axes[4].legend()
         axes[4].grid(True, alpha=0.3)
 
@@ -410,8 +418,10 @@ def plot_results(csv_path, save_dir):
         axes[5].set_title('Learning Rate', fontsize=13)
         axes[5].grid(True, alpha=0.3)
         
+    from matplotlib.ticker import MaxNLocator
     for ax in axes:
         ax.set_xlabel('Epoch')
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
 
     plt.tight_layout()
     plot_path = Path(save_dir) / 'results.png'
@@ -490,7 +500,7 @@ def train(args):
 
     # CSV logger
     csv_path = save_dir / "results.csv"
-    csv_header = ["epoch", "box_loss", "cls_loss", "dfl_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss", "lr", "mAP50", "mAP", "o2m_loss", "o2o_loss"]
+    csv_header = ["epoch", "box_loss", "cls_loss", "dfl_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss", "lr", "mAP50"]
 
     # ---- Resume from checkpoint ----
     start_epoch = 0
@@ -599,8 +609,7 @@ def train(args):
             csv.writer(f).writerow([
                 epoch + 1, f"{tloss[0]:.5f}", f"{tloss[1]:.5f}", f"{tloss[2]:.5f}",
                 f"{vloss[0]:.5f}", f"{vloss[1]:.5f}", f"{vloss[2]:.5f}",
-                f"{current_lr:.6f}", f"{mAP50:.5f}", f"{mAP:.5f}",
-                f"{tloss[3]:.5f}", f"{tloss[4]:.5f}"
+                f"{current_lr:.6f}", f"{mAP50:.5f}"
             ])
 
         # Save checkpoints — SOURCE: engine/trainer.py L642-687

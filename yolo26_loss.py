@@ -329,7 +329,7 @@ class v8DetectionLoss:
     def loss(self, preds, batch):
         batch_size = preds["boxes"].shape[0]
         loss, loss_detach = self._compute_loss(preds, batch)
-        return loss * batch_size, loss_detach
+        return loss.sum() * batch_size, loss_detach
 
     def _compute_loss(self, preds, batch):
         loss = torch.zeros(3, device=self.device)
