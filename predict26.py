@@ -14,6 +14,30 @@ import torch
 from yolo26_modules import build_yolo26
 
 
+def simple_nms(boxes, scores, iou_threshold=0.45):
+    """torchvision-free NMS. boxes: [N,4] xyxy, scores: [N]."""
+    if len(boxes) == 0:
+        return torch.zeros(0, dtype=torch.long, device=boxes.device)
+    order = scores.argsort(descending=True)
+    keep = []
+    while order.numel() > 0:
+        i = order[0].item()
+        keep.append(i)
+        if order.numel() == 1:
+            break
+        rest = order[1:]
+        xx1 = boxes[rest, 0].clamp(min=boxes[i, 0].item())
+        yy1 = boxes[rest, 1].clamp(min=boxes[i, 1].item())
+        xx2 = boxes[rest, 2].clamp(max=boxes[i, 2].item())
+        yy2 = boxes[rest, 3].clamp(max=boxes[i, 3].item())
+        inter = (xx2 - xx1).clamp(min=0) * (yy2 - yy1).clamp(min=0)
+        a1 = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
+        a2 = (boxes[rest, 2] - boxes[rest, 0]) * (boxes[rest, 3] - boxes[rest, 1])
+        iou = inter / (a1 + a2 - inter + 1e-7)
+        order = rest[iou <= iou_threshold]
+    return torch.tensor(keep, dtype=torch.long, device=boxes.device)
+
+
 def letterbox(im, new_shape=640, color=(114, 114, 114)):
     """Resize and pad image to new_shape keeping aspect ratio."""
     shape = im.shape[:2]
@@ -58,11 +82,11 @@ def predict(args):
     print(f"Loading weights from {args.weights}")
     ckpt = torch.load(args.weights, map_location=device, weights_only=False)
     
-    # Extract model args
-    hyp_args = ckpt.get("args", {})
-    nc = hyp_args.get("nc", args.nc)
-    scale = hyp_args.get("scale", "n")
-    reg_max = hyp_args.get("reg_max", 1)
+    # Extract model config (saved by train26.py in 'model_cfg')
+    model_cfg = ckpt.get("model_cfg", {})
+    nc = model_cfg.get("nc", args.nc)
+    scale = model_cfg.get("scale", "n")
+    reg_max = model_cfg.get("reg_max", 16)
 
     # Build model and load weights
     model = build_yolo26(nc=nc, scale=scale, reg_max=reg_max)
@@ -93,7 +117,12 @@ def predict(args):
     # Postprocess
     pred = y[0] # first image in batch
     pred = pred[pred[:, 4] > args.conf] # filter by confidence
-    
+
+    # Apply NMS to remove duplicate / overlapping boxes
+    if len(pred) > 0:
+        nms_keep = simple_nms(pred[:, :4], pred[:, 4], iou_threshold=0.45)
+        pred = pred[nms_keep]
+
     # Scale boxes back to original image size
     if len(pred):
         pred[:, 0] -= dw  # x1

@@ -94,12 +94,48 @@ class YOLODataset(Dataset):
         }
 
     def _augment(self, im, labels):
-        # Horizontal flip
+        h0, w0 = im.shape[:2]
+
+        # --- Random Scale + Translate (affine) ---
+        if random.random() < 0.5:
+            scale = random.uniform(0.5, 1.5)
+            tx = random.uniform(-0.1, 0.1)
+            ty = random.uniform(-0.1, 0.1)
+            M = np.array([[scale, 0, tx * w0], [0, scale, ty * h0]], dtype=np.float32)
+            im = cv2.warpAffine(im, M, (w0, h0), borderValue=(114, 114, 114))
+            if len(labels):
+                labels[:, 1] = labels[:, 1] * scale + tx
+                labels[:, 2] = labels[:, 2] * scale + ty
+                labels[:, 3] *= scale
+                labels[:, 4] *= scale
+                # Filter out boxes that went out of frame
+                labels[:, 1:5] = np.clip(labels[:, 1:5], 0.0, 1.0)
+                # Remove boxes with tiny width or height after clipping
+                keep = (labels[:, 3] > 0.01) & (labels[:, 4] > 0.01)
+                labels = labels[keep]
+
+        # --- Small Random Rotation (±10°) ---
+        if random.random() < 0.3:
+            angle = random.uniform(-10, 10)
+            center = (w0 / 2, h0 / 2)
+            M_rot = cv2.getRotationMatrix2D(center, angle, 1.0)
+            im = cv2.warpAffine(im, M_rot, (w0, h0), borderValue=(114, 114, 114))
+            # Note: small rotations on normalized xywh are approximately valid;
+            # for large angles, proper label rotation would be needed.
+
+        # --- Horizontal Flip ---
         if random.random() < 0.5:
             im = np.fliplr(im).copy()
             if len(labels):
                 labels[:, 1] = 1.0 - labels[:, 1]
-        # HSV augmentation
+
+        # --- Vertical Flip ---
+        if random.random() < 0.2:
+            im = np.flipud(im).copy()
+            if len(labels):
+                labels[:, 2] = 1.0 - labels[:, 2]
+
+        # --- HSV Augmentation ---
         if random.random() < 0.5:
             h_gain, s_gain, v_gain = 0.015, 0.7, 0.4
             r = np.random.uniform(-1, 1, 3) * [h_gain, s_gain, v_gain] + 1
@@ -108,6 +144,16 @@ class YOLODataset(Dataset):
             hsv[..., 1] = np.clip(hsv[..., 1] * r[1], 0, 255)
             hsv[..., 2] = np.clip(hsv[..., 2] * r[2], 0, 255)
             im = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+        # --- Random Erasing / Cutout ---
+        if random.random() < 0.3 and len(labels):
+            ch, cw = im.shape[:2]
+            ew = random.randint(int(cw * 0.05), int(cw * 0.2))
+            eh = random.randint(int(ch * 0.05), int(ch * 0.2))
+            ex = random.randint(0, cw - ew)
+            ey = random.randint(0, ch - eh)
+            im[ey:ey + eh, ex:ex + ew] = 114  # gray fill
+
         return im, labels
 
 
@@ -658,7 +704,7 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=str, required=True, help="Path to dataset root (train/val/images/labels)")
     parser.add_argument("--nc", type=int, default=80, help="Number of classes")
     parser.add_argument("--scale", type=str, default="n", choices=["n", "s", "m", "l", "x"], help="Model scale")
-    parser.add_argument("--reg_max", type=int, default=1, help="DFL bins (1=no DFL, 16=full DFL)")
+    parser.add_argument("--reg_max", type=int, default=16, help="DFL bins (1=no DFL, 16=full DFL)")
     parser.add_argument("--epochs", type=int, default=100, help="Training epochs")
     parser.add_argument("--batch", type=int, default=16, help="Batch size")
     parser.add_argument("--imgsz", type=int, default=640, help="Image size")

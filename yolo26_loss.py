@@ -386,7 +386,7 @@ class E2ELoss:
         self.o2m = 0.8
         self.o2o = self.total - self.o2m
         self.o2m_copy = self.o2m
-        self.final_o2m = 0.1
+        self.final_o2m = 0.3
 
     def __call__(self, preds, batch):
         preds = self.one2many.parse_output(preds)
